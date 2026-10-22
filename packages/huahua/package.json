@@ -3,5 +3,5 @@
   "type": "module", "main": "./dist/index.js", "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "files": ["dist", "LICENSE"],
-  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" }
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json", "test": "vitest run" }
 }

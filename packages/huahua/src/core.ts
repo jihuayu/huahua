@@ -4,17 +4,20 @@ import { makeAnchor, resolveAnchor } from './anchor.js';
 import { MemoryStorage } from './storage.js';
 import { clearHighlights, renderAnnotations, type RenderStatus } from './renderer.js';
 import { exportJSON, exportMarkdown } from './export.js';
-import { validateActions } from './plugins.js';
-export type HuahuaOptions = { root: HTMLElement; document: DocumentIdentity; storage?: StorageAdapter; content?: AdapterFactory; ui?: UISlot; actions?: ActionPlugin[]; renderer?: RendererMode; onEvent?: (event: AnnotationEvent) => void };
+import { createPluginRuntime, validateActions, type PluginEvent, type PluginRuntime, type ProviderSelection, type RegisteredPlugin } from './plugins.js';
+export type HuahuaOptions = { root: HTMLElement; document: DocumentIdentity; storage?: StorageAdapter; content?: AdapterFactory; ui?: UISlot; actions?: ActionPlugin[]; plugins?: readonly RegisteredPlugin[]; providers?: ProviderSelection; signal?: AbortSignal; renderer?: RendererMode; onEvent?: (event: AnnotationEvent) => void; onPluginEvent?: (event: PluginEvent) => void };
 export class Huahua {
   readonly root: HTMLElement; readonly document: DocumentIdentity; readonly storage: StorageAdapter; readonly content: ContentAdapter;
   readonly actions: readonly ActionPlugin[];
+  readonly #plugins: PluginRuntime;
   readonly #listeners = new Set<(annotations: readonly Annotation[]) => void>(); readonly #onEvent: ((event: AnnotationEvent) => void) | undefined; readonly #ui: { destroy(): void } | undefined;
   #annotations: Annotation[] = []; #index: TextIndex; #selection: SelectionSnapshot | null = null; #generation = 0; #disposed = false; #observer: MutationObserver | null = null; #timer: number | null = null;
+  #destroyPromise: Promise<void> | undefined;
   readonly commands: AnnotationCommands;
   readonly rendererMode: RendererMode;
-  private constructor(options: HuahuaOptions, content: ContentAdapter) {
+  private constructor(options: HuahuaOptions, content: ContentAdapter, plugins: PluginRuntime) {
     this.root = options.root; this.document = { ...options.document }; this.storage = options.storage ?? new MemoryStorage(); this.content = content; this.#onEvent = options.onEvent; this.rendererMode = options.renderer ?? 'auto'; this.actions = options.actions ?? []; validateActions(this.actions);
+    this.#plugins = plugins;
     this.#index = content.buildIndex();
     this.commands = { createHighlight: (s, c, n) => this.createHighlight(s, c, n), update: (id, patch) => this.update(id, patch), remove: id => this.remove(id) };
     this.#ui = options.ui?.({ annotations: this.#annotations, commands: this.commands, root: this.root, subscribe: listener => this.subscribe(listener) });
@@ -24,10 +27,29 @@ export class Huahua {
   static async create(options: HuahuaOptions): Promise<Huahua> {
     if (!options.document.id || !options.document.renditionId) throw new TypeError('document id and renditionId are required');
     if (!options.root.isConnected) throw new TypeError('root must be connected to the document');
-    const content = (options.content ?? (root => ({ root, buildIndex: () => createTextIndex(root), destroy() {} })))(options.root);
-    const instance = new Huahua(options, content);
-    try { instance.#annotations = await instance.storage.list(options.document.id); instance.refresh(); return instance; }
-    catch (error) { instance.destroy(); throw error; }
+    const plugins = await createPluginRuntime(options.plugins ?? [], {
+      ...(options.providers === undefined ? {} : { providers: options.providers }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.onPluginEvent === undefined ? {} : { onEvent: options.onPluginEvent })
+    });
+    let content: ContentAdapter | undefined, instance: Huahua | undefined;
+    try {
+      content = (options.content ?? (root => ({ root, buildIndex: () => createTextIndex(root), destroy() {} })))(options.root);
+      instance = new Huahua(options, content, plugins);
+      instance.#annotations = await instance.storage.list(options.document.id); instance.refresh(); return instance;
+    } catch (error) {
+      if (instance) {
+        try { await instance.destroy(); }
+        catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Annotator setup failed and cleanup reported errors', { cause: error }); }
+      }
+      else {
+        const cleanupErrors: unknown[] = [];
+        try { content?.destroy(); } catch (cleanupError) { cleanupErrors.push(cleanupError); }
+        try { await plugins.destroy(); } catch (cleanupError) { cleanupErrors.push(cleanupError); }
+        if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], 'Annotator setup failed and cleanup reported errors', { cause: error });
+      }
+      throw error;
+    }
   }
   get annotations(): readonly Annotation[] { return this.#annotations; }
   get selection(): SelectionSnapshot | null { return this.#selection; }
@@ -39,7 +61,24 @@ export class Huahua {
   reanchor(id: string, start: number, end: number): Promise<Annotation> { const item = this.get(id); const anchor = makeAnchor(this.#index, start, end, this.document.renditionId, this.document.version); return this.updateFull(item, { anchors: [...item.anchors, anchor] }); }
   exportJSON(): string { return exportJSON(this.#annotations); }
   exportMarkdown(): string { return exportMarkdown(this.#annotations); }
-  destroy(): void { if (this.#disposed) return; this.#disposed = true; this.#generation++; if (this.#timer !== null) this.root.ownerDocument.defaultView?.clearTimeout(this.#timer); this.#observer?.disconnect(); this.root.removeEventListener('mouseup', this.onSelection); this.root.ownerDocument.removeEventListener('selectionchange', this.onSelection); clearHighlights(this.root); this.#ui?.destroy(); this.content.destroy(); this.#listeners.clear(); }
+  destroy(): Promise<void> {
+    if (this.#destroyPromise) return this.#destroyPromise;
+    this.#disposed = true; this.#generation++;
+    this.#destroyPromise = Promise.resolve().then(async () => {
+      const errors: unknown[] = [];
+      try { if (this.#timer !== null) this.root.ownerDocument.defaultView?.clearTimeout(this.#timer); } catch (error) { errors.push(error); }
+      try { this.#observer?.disconnect(); } catch (error) { errors.push(error); }
+      try { this.root.removeEventListener('mouseup', this.onSelection); } catch (error) { errors.push(error); }
+      try { this.root.ownerDocument.removeEventListener('selectionchange', this.onSelection); } catch (error) { errors.push(error); }
+      try { clearHighlights(this.root); } catch (error) { errors.push(error); }
+      try { this.#ui?.destroy(); } catch (error) { errors.push(error); }
+      try { this.content.destroy(); } catch (error) { errors.push(error); }
+      try { await this.#plugins.destroy(); } catch (error) { errors.push(error); }
+      this.#listeners.clear();
+      if (errors.length) throw new AggregateError(errors, 'Annotator cleanup failed');
+    });
+    return this.#destroyPromise;
+  }
   readonly onSelection = (): void => { if (this.#disposed) return; const selection = this.root.ownerDocument.getSelection(); if (!selection || selection.isCollapsed || !this.root.contains(selection.anchorNode) || !this.root.contains(selection.focusNode)) { this.#selection = null; return; }
     const range = selection.getRangeAt(0), offsets = this.#index.rangeToOffsets(range); if (!offsets) { this.#selection = null; return; }
     let anchor: ReturnType<typeof makeAnchor>;

@@ -1,13 +1,14 @@
 {
   "name": "huahua-workspace",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@11.1.2",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "build": "pnpm --filter @huahua/core build",
-    "typecheck": "pnpm --filter @huahua/core typecheck",
+    "typecheck": "pnpm --filter @huahua/core typecheck && tsc -p tsconfig.e2e.json",
     "test": "pnpm --filter @huahua/core test",
     "test:package": "pnpm build && node tests/consumer.mjs",
     "test:e2e": "playwright test"
