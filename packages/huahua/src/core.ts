@@ -22,7 +22,7 @@ export class Huahua {
     this.commands = { createHighlight: (s, c, n) => this.createHighlight(s, c, n), update: (id, patch) => this.update(id, patch), remove: id => this.remove(id) };
     this.#ui = options.ui?.({ annotations: this.#annotations, commands: this.commands, root: this.root, subscribe: listener => this.subscribe(listener) });
     this.#observer = new MutationObserver(() => this.scheduleRefresh()); this.#observer.observe(this.root, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
-    this.root.addEventListener('mouseup', this.onSelection); this.root.ownerDocument.addEventListener('selectionchange', this.onSelection);
+    this.root.addEventListener('mouseup', this.onRootMouseUp); this.root.ownerDocument.addEventListener('selectionchange', this.onSelection);
   }
   static async create(options: HuahuaOptions): Promise<Huahua> {
     if (!options.document.id || !options.document.renditionId) throw new TypeError('document id and renditionId are required');
@@ -68,7 +68,7 @@ export class Huahua {
       const errors: unknown[] = [];
       try { if (this.#timer !== null) this.root.ownerDocument.defaultView?.clearTimeout(this.#timer); } catch (error) { errors.push(error); }
       try { this.#observer?.disconnect(); } catch (error) { errors.push(error); }
-      try { this.root.removeEventListener('mouseup', this.onSelection); } catch (error) { errors.push(error); }
+      try { this.root.removeEventListener('mouseup', this.onRootMouseUp); } catch (error) { errors.push(error); }
       try { this.root.ownerDocument.removeEventListener('selectionchange', this.onSelection); } catch (error) { errors.push(error); }
       try { clearHighlights(this.root); } catch (error) { errors.push(error); }
       try { this.#ui?.destroy(); } catch (error) { errors.push(error); }
@@ -79,7 +79,12 @@ export class Huahua {
     });
     return this.#destroyPromise;
   }
-  readonly onSelection = (): void => { if (this.#disposed) return; const selection = this.root.ownerDocument.getSelection(); if (!selection || selection.isCollapsed || !this.root.contains(selection.anchorNode) || !this.root.contains(selection.focusNode)) { this.#selection = null; return; }
+  readonly onRootMouseUp = (): void => {
+    const selection = this.root.ownerDocument.getSelection();
+    if (!selection || selection.isCollapsed || !this.root.contains(selection.anchorNode) || !this.root.contains(selection.focusNode)) { this.#selection = null; return; }
+    this.onSelection();
+  };
+  readonly onSelection = (): void => { if (this.#disposed) return; const selection = this.root.ownerDocument.getSelection(); if (!selection || selection.isCollapsed) return; if (!this.root.contains(selection.anchorNode) || !this.root.contains(selection.focusNode)) { this.#selection = null; return; }
     const range = selection.getRangeAt(0), offsets = this.#index.rangeToOffsets(range); if (!offsets) { this.#selection = null; return; }
     let anchor: ReturnType<typeof makeAnchor>;
     try { anchor = makeAnchor(this.#index, offsets.start, offsets.end, this.document.renditionId, this.document.version); } catch { this.#selection = null; return; }
