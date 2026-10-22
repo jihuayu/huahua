@@ -1,0 +1,1 @@
+{"name":"@huahua/demo","private":true,"type":"module","scripts":{"dev":"vite --host 127.0.0.1"},"dependencies":{"@huahua/core":"workspace:*","vite":"6.4.1"}}

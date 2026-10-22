@@ -1,0 +1,23 @@
+{
+  "name": "huahua-workspace",
+  "private": true,
+  "packageManager": "pnpm@11.1.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm --filter @huahua/core build",
+    "typecheck": "pnpm --filter @huahua/core typecheck",
+    "test": "pnpm --filter @huahua/core test",
+    "test:package": "pnpm build && node tests/consumer.mjs",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@types/node": "24.10.0",
+    "fast-check": "4.3.0",
+    "jsdom": "26.1.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
